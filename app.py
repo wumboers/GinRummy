@@ -7,7 +7,7 @@ import time
 
 from ai_client import start_ai_thread
 from client_ui import connect_client, launch_client_ui, make_client_context
-from server import DEFAULT_PORT, make_server_context, process_one_event, start_server, stop_server
+from server import DEFAULT_PORT, DEFAULT_TURN_TIMEOUT_SECONDS, make_server_context, process_one_event, start_server, stop_server
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,10 +25,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--password", default="", help="Optional shared password required to join the game.")
     parser.add_argument("--ai", action="store_true", help="Host a solo match against a built-in computer player.")
     parser.add_argument("--seed", type=int, default=None, help="Optional deterministic seed for testing the host deck order.")
+    parser.add_argument(
+        "--turn-timeout",
+        type=int,
+        default=DEFAULT_TURN_TIMEOUT_SECONDS,
+        help="Optional seconds allowed per turn before the server auto-plays. Use 0 to disable.",
+    )
     return parser
 
 
-def run_host(port: int, name: str, seed: int | None, password: str = "", use_ai: bool = False) -> None:
+def run_host(
+    port: int,
+    name: str,
+    seed: int | None,
+    password: str = "",
+    use_ai: bool = False,
+    turn_timeout: int = DEFAULT_TURN_TIMEOUT_SECONDS,
+) -> None:
     """Run host mode by starting the server and local client UI.
 
     Args:
@@ -36,7 +49,7 @@ def run_host(port: int, name: str, seed: int | None, password: str = "", use_ai:
         name: Local player display name.
         seed: Optional deterministic deck seed.
     """
-    server_context = make_server_context(port=port, seed=seed, password=password)
+    server_context = make_server_context(port=port, seed=seed, password=password, turn_timeout_seconds=turn_timeout)
     start_server(server_context)
     time.sleep(0.1)
 
@@ -45,11 +58,11 @@ def run_host(port: int, name: str, seed: int | None, password: str = "", use_ai:
 
     if use_ai:
         start_ai_thread("127.0.0.1", port, name="Computer", password=password)
-        banner = "Hosting locally versus Computer."
+        banner = f"Hosting locally versus Computer. Turn timeout: {turn_timeout or 'off'}."
     else:
         banner = (
             f"Hosting on {server_context['local_ip']}:{port}   "
-            f"Share that address with the other player."
+            f"Share that address with the other player. Turn timeout: {turn_timeout or 'off'}."
         )
 
     def tick() -> None:
@@ -81,7 +94,14 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     if args.host:
-        run_host(port=args.port, name=args.name, seed=args.seed, password=args.password, use_ai=args.ai)
+        run_host(
+            port=args.port,
+            name=args.name,
+            seed=args.seed,
+            password=args.password,
+            use_ai=args.ai,
+            turn_timeout=args.turn_timeout,
+        )
     else:
         run_client(host=args.join, port=args.port, name=args.name, password=args.password)
 

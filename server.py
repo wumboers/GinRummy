@@ -11,10 +11,13 @@ import time
 from typing import Any
 
 from engine import (
+    append_log,
+    card_value,
     continue_after_round,
     discard_card,
     draw_from_discard,
     draw_from_stock,
+    evaluate_hand,
     make_initial_state,
     make_public_state,
     rename_player,
@@ -29,6 +32,7 @@ AUTH_TIMEOUT_SECONDS = 10.0
 RECONNECT_GRACE_SECONDS = 60.0
 AUTH_FAILURE_WINDOW_SECONDS = 60.0
 MAX_AUTH_FAILURES = 5
+DEFAULT_TURN_TIMEOUT_SECONDS = 0
 
 
 def _hash_password(password: str) -> str:
@@ -43,7 +47,13 @@ def _sanitize_chat_message(message: str) -> str:
     return sanitized[:300]
 
 
-def make_server_context(host: str = "0.0.0.0", port: int = DEFAULT_PORT, seed: int | None = None, password: str = "") -> dict[str, Any]:
+def make_server_context(
+    host: str = "0.0.0.0",
+    port: int = DEFAULT_PORT,
+    seed: int | None = None,
+    password: str = "",
+    turn_timeout_seconds: int = DEFAULT_TURN_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     """Create a mutable server context.
 
     Args:
@@ -71,6 +81,8 @@ def make_server_context(host: str = "0.0.0.0", port: int = DEFAULT_PORT, seed: i
         "lock": threading.Lock(),
         "local_ip": guess_local_ip(),
         "password_hash": _hash_password(password) if password else None,
+        "turn_timeout_seconds": max(0, int(turn_timeout_seconds)),
+        "turn_deadline_monotonic": None,
     }
 
 
@@ -79,6 +91,7 @@ def start_server(context: dict[str, Any]) -> None:
     server_socket = create_server_socket(context["host"], context["port"])
     context["server_socket"] = server_socket
     context["running"] = True
+    _reset_turn_deadline(context)
 
     accept_thread = threading.Thread(target=accept_loop, args=(context,), daemon=True)
     accept_thread.start()
@@ -166,6 +179,99 @@ def _send_to_connection(context: dict[str, Any], connection_id: int, payload: di
     send_message(sock, payload)
 
 
+def _make_player_payload(context: dict[str, Any], player_index: int) -> dict[str, Any]:
+    """Build one public-state payload with timeout metadata."""
+    payload = make_public_state(context["state"], player_index)
+    deadline = context.get("turn_deadline_monotonic")
+    remaining = None
+    if deadline is not None:
+        remaining = max(0.0, deadline - time.monotonic())
+    payload["turn_timeout_seconds"] = context.get("turn_timeout_seconds", 0)
+    payload["turn_time_remaining"] = remaining
+    return payload
+
+
+def _reset_turn_deadline(context: dict[str, Any]) -> None:
+    """Reset the server-side deadline for the current turn, if enabled."""
+    timeout_seconds = int(context.get("turn_timeout_seconds", 0))
+    round_state = context["state"]["round"]
+    if timeout_seconds <= 0 or round_state["round_over"] or context["state"]["game_over"]:
+        context["turn_deadline_monotonic"] = None
+        return
+    context["turn_deadline_monotonic"] = time.monotonic() + timeout_seconds
+
+
+def _discard_candidate_key(card: str, evaluation: dict[str, Any]) -> tuple[int, int, int, str]:
+    """Rank timeout discard candidates by resulting hand quality."""
+    return (
+        int(evaluation["deadwood_value"]),
+        len(evaluation["deadwood"]),
+        -card_value(card),
+        card,
+    )
+
+
+def _choose_timeout_discard(state: dict[str, Any], player_index: int) -> str:
+    """Choose a legal discard when a player's turn times out."""
+    hand = list(state["round"]["hands"][player_index])
+    pending_knock = bool(state["round"]["pending_knock"])
+    best_card: str | None = None
+    best_key: tuple[int, int, int, str] | None = None
+    best_knock_card: str | None = None
+    best_knock_key: tuple[int, int, int, str] | None = None
+
+    for card in list(dict.fromkeys(hand)):
+        remaining = list(hand)
+        remaining.remove(card)
+        evaluation = evaluate_hand(remaining)
+        candidate_key = _discard_candidate_key(card, evaluation)
+        if best_key is None or candidate_key < best_key:
+            best_key = candidate_key
+            best_card = card
+        if pending_knock and evaluation["deadwood_value"] <= 10:
+            if best_knock_key is None or candidate_key < best_knock_key:
+                best_knock_key = candidate_key
+                best_knock_card = card
+
+    if pending_knock and best_knock_card is not None:
+        return best_knock_card
+    if best_card is None:
+        raise ValueError("No legal discard available for timeout handling.")
+    return best_card
+
+
+def _apply_turn_timeout(context: dict[str, Any]) -> None:
+    """Apply an automatic action when the active player runs out of time."""
+    state = context["state"]
+    round_state = state["round"]
+    if round_state["round_over"]:
+        _reset_turn_deadline(context)
+        return
+
+    player_index = round_state["turn"]
+    player_name = state["players"][player_index]["name"]
+    stage = round_state["stage"]
+
+    if stage == "offer_first_upcard":
+        append_log(state, f"{player_name} ran out of time and automatically declined the opening discard.")
+        draw_from_stock(state, player_index)
+    elif stage == "draw":
+        append_log(state, f"{player_name} ran out of time and automatically drew from stock.")
+        draw_from_stock(state, player_index)
+    elif stage == "discard":
+        discard = _choose_timeout_discard(state, player_index)
+        if round_state["pending_knock"]:
+            remaining = list(round_state["hands"][player_index])
+            remaining.remove(discard)
+            if evaluate_hand(remaining)["deadwood_value"] > 10:
+                round_state["pending_knock"] = False
+                append_log(state, f"{player_name}'s pending knock was canceled after timing out.")
+        append_log(state, f"{player_name} ran out of time and automatically discarded {discard}.")
+        discard_card(state, player_index, discard)
+
+    _reset_turn_deadline(context)
+
+
 def _send_fatal_and_close(context: dict[str, Any], connection_id: int, message: str) -> None:
     """Send a fatal error to a connection and close it."""
     try:
@@ -231,6 +337,11 @@ def _cleanup_expired_state(context: dict[str, Any]) -> None:
         if connection.get("player_index") is None and now - connection["connected_at"] > AUTH_TIMEOUT_SECONDS:
             _send_fatal_and_close(context, connection_id, "Authentication timed out.")
 
+    deadline = context.get("turn_deadline_monotonic")
+    if deadline is not None and now >= deadline:
+        _apply_turn_timeout(context)
+        broadcast_state(context)
+
 
 def _player_index_for_connection(context: dict[str, Any], connection_id: int) -> int | None:
     """Return the authenticated player index bound to a connection."""
@@ -276,7 +387,7 @@ def broadcast_state(context: dict[str, Any]) -> None:
     """Send the latest redacted state to all connected authenticated players."""
     for player_index, connection_id in list(context["player_connections"].items()):
         try:
-            _send_to_connection(context, connection_id, {"type": "state", "state": make_public_state(context["state"], player_index)})
+            _send_to_connection(context, connection_id, {"type": "state", "state": _make_player_payload(context, player_index)})
         except OSError:
             context["event_queue"].put((connection_id, {"type": "disconnect"}))
 
@@ -343,7 +454,7 @@ def handle_client_message(context: dict[str, Any], connection_id: int, message: 
         context["player_connections"][player_index] = connection_id
         rename_player(context["state"], player_index, requested_name)
         _send_to_connection(context, connection_id, {"type": "assign", "player": player_index})
-        _send_to_connection(context, connection_id, {"type": "state", "state": make_public_state(context["state"], player_index)})
+        _send_to_connection(context, connection_id, {"type": "state", "state": _make_player_payload(context, player_index)})
         broadcast_state(context)
         return
 
@@ -385,4 +496,6 @@ def handle_client_message(context: dict[str, Any], connection_id: int, message: 
         broadcast_state(context)
         return
 
+    if action in {"draw_stock", "draw_discard", "discard", "continue"}:
+        _reset_turn_deadline(context)
     broadcast_state(context)
