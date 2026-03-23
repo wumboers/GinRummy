@@ -22,12 +22,13 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--join", metavar="HOST", help="Join an existing LAN match by host/IP.")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"TCP port. Default: {DEFAULT_PORT}")
     parser.add_argument("--name", default="Player", help="Display name shown in the game UI.")
+    parser.add_argument("--password", default="", help="Optional shared password required to join the game.")
     parser.add_argument("--ai", action="store_true", help="Host a solo match against a built-in computer player.")
     parser.add_argument("--seed", type=int, default=None, help="Optional deterministic seed for testing the host deck order.")
     return parser
 
 
-def run_host(port: int, name: str, seed: int | None, use_ai: bool = False) -> None:
+def run_host(port: int, name: str, seed: int | None, password: str = "", use_ai: bool = False) -> None:
     """Run host mode by starting the server and local client UI.
 
     Args:
@@ -35,15 +36,15 @@ def run_host(port: int, name: str, seed: int | None, use_ai: bool = False) -> No
         name: Local player display name.
         seed: Optional deterministic deck seed.
     """
-    server_context = make_server_context(port=port, seed=seed)
+    server_context = make_server_context(port=port, seed=seed, password=password)
     start_server(server_context)
     time.sleep(0.1)
 
-    client_context = make_client_context("127.0.0.1", port, name)
+    client_context = make_client_context("127.0.0.1", port, name, password=password)
     connect_client(client_context)
 
     if use_ai:
-        start_ai_thread("127.0.0.1", port, name="Computer")
+        start_ai_thread("127.0.0.1", port, name="Computer", password=password)
         banner = "Hosting locally versus Computer."
     else:
         banner = (
@@ -61,7 +62,7 @@ def run_host(port: int, name: str, seed: int | None, use_ai: bool = False) -> No
         stop_server(server_context)
 
 
-def run_client(host: str, port: int, name: str) -> None:
+def run_client(host: str, port: int, name: str, password: str = "") -> None:
     """Run join mode and open the GUI.
 
     Args:
@@ -69,7 +70,7 @@ def run_client(host: str, port: int, name: str) -> None:
         port: TCP port.
         name: Player display name.
     """
-    client_context = make_client_context(host, port, name)
+    client_context = make_client_context(host, port, name, password=password)
     connect_client(client_context)
     banner = f"Connected to {host}:{port}"
     launch_client_ui(client_context, host_banner=banner)
@@ -80,9 +81,9 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     if args.host:
-        run_host(port=args.port, name=args.name, seed=args.seed, use_ai=args.ai)
+        run_host(port=args.port, name=args.name, seed=args.seed, password=args.password, use_ai=args.ai)
     else:
-        run_client(host=args.join, port=args.port, name=args.name)
+        run_client(host=args.join, port=args.port, name=args.name, password=args.password)
 
 
 if __name__ == "__main__":

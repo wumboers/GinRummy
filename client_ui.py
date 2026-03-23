@@ -19,13 +19,14 @@ CARD_HEIGHT = 84
 CARD_GAP = 8
 
 
-def make_client_context(host: str, port: int, name: str) -> dict[str, Any]:
+def make_client_context(host: str, port: int, name: str, password: str = "") -> dict[str, Any]:
     """Create a client context dictionary.
 
     Args:
         host: Server host or IP address.
         port: Server port.
         name: Player display name.
+        password: Optional shared game password.
 
     Returns:
         Mutable client context.
@@ -34,6 +35,7 @@ def make_client_context(host: str, port: int, name: str) -> dict[str, Any]:
         "host": host,
         "port": port,
         "name": name,
+        "password": password,
         "socket": None,
         "reader_queue": queue.Queue(),
         "running": False,
@@ -55,7 +57,7 @@ def connect_client(context: dict[str, Any]) -> None:
     sock = create_client_socket(context["host"], context["port"])
     context["socket"] = sock
     context["running"] = True
-    send_message(sock, {"type": "hello", "name": context["name"]})
+    send_message(sock, {"type": "hello", "name": context["name"], "password": context.get("password", "")})
     reader = threading.Thread(target=reader_loop, args=(context,), daemon=True)
     reader.start()
 

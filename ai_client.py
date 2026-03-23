@@ -20,10 +20,11 @@ class AIClient:
         name: Display name shown in the UI.
     """
 
-    def __init__(self, host: str, port: int, name: str = "Computer") -> None:
+    def __init__(self, host: str, port: int, name: str = "Computer", password: str = "") -> None:
         self.host = host
         self.port = port
         self.name = name
+        self.password = password
         self.sock: socket.socket | None = None
         self.running = False
         self.player_index: int | None = None
@@ -35,7 +36,7 @@ class AIClient:
         """Connect to the host and announce the AI player name."""
         self.sock = create_client_socket(self.host, self.port)
         self.running = True
-        send_message(self.sock, {"type": "hello", "name": self.name})
+        send_message(self.sock, {"type": "hello", "name": self.name, "password": self.password})
 
     def close(self) -> None:
         """Close the AI client socket."""
@@ -279,7 +280,7 @@ class AIClient:
         return candidate_key > incumbent_key
 
 
-def run_ai_client(host: str, port: int, name: str = "Computer") -> None:
+def run_ai_client(host: str, port: int, name: str = "Computer", password: str = "") -> None:
     """Connect a local AI player to the running host server.
 
     Args:
@@ -287,11 +288,11 @@ def run_ai_client(host: str, port: int, name: str = "Computer") -> None:
         port: TCP port.
         name: Display name shown for the AI.
     """
-    ai = AIClient(host=host, port=port, name=name)
+    ai = AIClient(host=host, port=port, name=name, password=password)
     ai.run()
 
 
-def start_ai_thread(host: str, port: int, name: str = "Computer") -> threading.Thread:
+def start_ai_thread(host: str, port: int, name: str = "Computer", password: str = "") -> threading.Thread:
     """Launch the AI client in a daemon thread.
 
     Args:
@@ -302,6 +303,6 @@ def start_ai_thread(host: str, port: int, name: str = "Computer") -> threading.T
     Returns:
         Started daemon thread object.
     """
-    thread = threading.Thread(target=run_ai_client, args=(host, port, name), daemon=True)
+    thread = threading.Thread(target=run_ai_client, args=(host, port, name, password), daemon=True)
     thread.start()
     return thread

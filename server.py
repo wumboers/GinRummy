@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import queue
 import socket
 import threading
@@ -24,13 +25,19 @@ from net import create_server_socket, guess_local_ip, recv_messages, send_messag
 DEFAULT_PORT = 43851
 
 
-def make_server_context(host: str = "0.0.0.0", port: int = DEFAULT_PORT, seed: int | None = None) -> dict[str, Any]:
+def _hash_password(password: str) -> str:
+    """Return a stable hash for a shared game password."""
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+def make_server_context(host: str = "0.0.0.0", port: int = DEFAULT_PORT, seed: int | None = None, password: str = "") -> dict[str, Any]:
     """Create a mutable server context.
 
     Args:
         host: Bind address.
         port: TCP port.
         seed: Optional RNG seed.
+        password: Optional shared password required to join.
 
     Returns:
         Server context dictionary.
@@ -47,6 +54,8 @@ def make_server_context(host: str = "0.0.0.0", port: int = DEFAULT_PORT, seed: i
         "threads": [],
         "lock": threading.Lock(),
         "local_ip": guess_local_ip(),
+        "password_hash": _hash_password(password) if password else None,
+        "authenticated": set(),
     }
 
 
@@ -114,9 +123,6 @@ def accept_loop(context: dict[str, Any]) -> None:
             context["client_sockets"][player_index] = sock
             context["client_buffers"][player_index] = b""
 
-        send_message(sock, {"type": "assign", "player": player_index})
-        send_message(sock, {"type": "state", "state": make_public_state(context["state"], player_index)})
-
         reader = threading.Thread(target=client_reader_loop, args=(context, player_index), daemon=True)
         reader.start()
         context["threads"].append(reader)
@@ -149,6 +155,8 @@ def broadcast_state(context: dict[str, Any]) -> None:
         context: Server context.
     """
     for player_index, sock in list(context["client_sockets"].items()):
+        if player_index not in context["authenticated"]:
+            continue
         try:
             send_message(sock, {"type": "state", "state": make_public_state(context["state"], player_index)})
         except OSError:
@@ -202,23 +210,45 @@ def handle_client_message(context: dict[str, Any], player_index: int, message: d
     message_type = message.get("type")
 
     if message_type == "disconnect":
+        context["authenticated"].discard(player_index)
         sock = context["client_sockets"].pop(player_index, None)
         if sock is not None:
             try:
                 sock.close()
             except OSError:
                 pass
-        context["state"]["log"].append(f"{context['state']['players'][player_index]['name']} disconnected.")
+        if player_index < len(context["state"]["players"]):
+            context["state"]["log"].append(f"{context['state']['players'][player_index]['name']} disconnected.")
         broadcast_state(context)
         return
 
     if message_type == "hello":
+        expected_hash = context.get("password_hash")
+        provided_password = str(message.get("password", ""))
+        if expected_hash is not None and _hash_password(provided_password) != expected_hash:
+            sock = context["client_sockets"].get(player_index)
+            if sock is not None:
+                try:
+                    send_message(sock, {"type": "fatal", "message": "Invalid password."})
+                except OSError:
+                    pass
+            handle_client_message(context, player_index, {"type": "disconnect"})
+            return
+        context["authenticated"].add(player_index)
         rename_player(context["state"], player_index, str(message.get("name", "")).strip())
+        sock = context["client_sockets"].get(player_index)
+        if sock is not None:
+            send_message(sock, {"type": "assign", "player": player_index})
+            send_message(sock, {"type": "state", "state": make_public_state(context["state"], player_index)})
         broadcast_state(context)
         return
 
     if message_type != "action":
         send_error(context, player_index, "Unknown message type.")
+        return
+
+    if player_index not in context["authenticated"]:
+        send_error(context, player_index, "Authenticate before sending actions.")
         return
 
     action = message.get("action")
