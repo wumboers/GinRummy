@@ -2,42 +2,6 @@
 
 A host-authoritative, two-player LAN Gin Rummy implementation built in Python using only the standard library.
 
-## Versions
-
-Older playable versions are preserved in Git tags:
-
-- `v1` - initial baseline
-- `v2` - gameplay and UI improvements
-- `v3` - current version with built-in AI support
-
-To inspect or run an older version:
-
-```powershell
-git checkout v1
-```
-
-```powershell
-git checkout v2
-```
-
-```powershell
-git checkout v3
-```
-
-To resume normal development from the latest code:
-
-```powershell
-git checkout master
-```
-
-For new work, use a feature branch and merge it back after committing:
-
-```powershell
-git checkout master
-git pull
-git checkout -b codex/your-change
-```
-
 ## What this is
 
 This project converts the original single-process Gin Rummy concept into a real two-player LAN game:
@@ -150,3 +114,39 @@ This is appropriate for a trusted home LAN. It is not designed as an anti-cheat 
 
 - This is a fresh multiplayer implementation, not a tiny patch on the original single-window code.
 - The UI is intentionally practical and maintainable instead of trying to preserve the old SimpleGUI animation model.
+
+## Versions
+
+Older playable versions are preserved in Git tags:
+
+- `v1` - initial baseline
+- `v2` - gameplay and UI improvements
+- `v3` - current version with built-in AI support
+
+To inspect or run an older version:
+
+```powershell
+git checkout v1
+```
+
+```powershell
+git checkout v2
+```
+
+```powershell
+git checkout v3
+```
+
+To resume normal development from the latest code:
+
+```powershell
+git checkout master
+```
+
+For new work, use a feature branch and merge it back after committing:
+
+```powershell
+git checkout master
+git pull
+git checkout -b codex/your-change
+```
