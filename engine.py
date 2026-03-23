@@ -216,6 +216,7 @@ def start_new_round(state: dict[str, Any], dealer: int | None = None) -> None:
         "first_upcard": upcard,
         "first_upcard_declines": [],
         "pending_knock": False,
+        "last_drawn": [None, None],
         "winner": None,
         "round_over": False,
         "summary": None,
@@ -225,6 +226,30 @@ def start_new_round(state: dict[str, Any], dealer: int | None = None) -> None:
         state,
         f"Round {state['round_index']} started. {state['players'][state['dealer']]['name']} deals. Upcard: {upcard}.",
     )
+
+
+def _sort_hand_for_player(state: dict[str, Any], player_index: int, keep_drawn_on_right: bool = True) -> None:
+    """Apply the player's preferred display ordering to their hand.
+
+    Args:
+        state: Match state.
+        player_index: Target player index.
+        keep_drawn_on_right: Whether to keep the most recently drawn card at the far right.
+    """
+    round_state = state["round"]
+    mode = state["players"][player_index].get("sort_mode", "rank")
+    last_drawn = round_state["last_drawn"][player_index]
+    hand = list(round_state["hands"][player_index])
+
+    if keep_drawn_on_right and last_drawn in hand:
+        evaluation = evaluate_hand(hand)
+        melded_cards = {card for meld in evaluation["melds"] for card in meld}
+        if last_drawn not in melded_cards:
+            hand.remove(last_drawn)
+            round_state["hands"][player_index] = sort_cards(hand, mode) + [last_drawn]
+            return
+
+    round_state["hands"][player_index] = sort_cards(hand, mode)
 
 
 def get_current_turn(state: dict[str, Any]) -> int:
@@ -561,10 +586,8 @@ def draw_from_stock(state: dict[str, Any], player_index: int) -> None:
 
     card = round_state["stock"].pop()
     round_state["hands"][player_index].append(card)
-    round_state["hands"][player_index] = sort_cards(
-        round_state["hands"][player_index],
-        state["players"][player_index].get("sort_mode", "rank"),
-    )
+    round_state["last_drawn"][player_index] = card
+    _sort_hand_for_player(state, player_index, keep_drawn_on_right=True)
     round_state["stage"] = "discard"
     round_state["pending_knock"] = False
     append_log(state, f"{state['players'][player_index]['name']} drew from stock.")
@@ -592,10 +615,8 @@ def draw_from_discard(state: dict[str, Any], player_index: int) -> None:
 
     card = round_state["discard"].pop()
     round_state["hands"][player_index].append(card)
-    round_state["hands"][player_index] = sort_cards(
-        round_state["hands"][player_index],
-        state["players"][player_index].get("sort_mode", "rank"),
-    )
+    round_state["last_drawn"][player_index] = card
+    _sort_hand_for_player(state, player_index, keep_drawn_on_right=True)
     round_state["stage"] = "discard"
     round_state["pending_knock"] = False
     append_log(state, f"{state['players'][player_index]['name']} drew {card} from discard.")
@@ -645,12 +666,13 @@ def discard_card(state: dict[str, Any], player_index: int, card: str) -> None:
         evaluation = evaluate_hand(hand)
         if evaluation["deadwood_value"] > 10:
             hand.append(card)
-            hand[:] = sort_cards(hand, state["players"][player_index].get("sort_mode", "rank"))
+            _sort_hand_for_player(state, player_index, keep_drawn_on_right=True)
             round_state["discard"].pop()
             raise ValueError(f"Deadwood must be 10 or less to knock. Current deadwood: {evaluation['deadwood_value']}.")
         finish_round(state, knocker=player_index)
         return
 
+    round_state["last_drawn"][player_index] = None
     round_state["turn"] = 1 - player_index
     round_state["stage"] = "draw"
     round_state["pending_knock"] = False
@@ -667,7 +689,7 @@ def set_sort_mode(state: dict[str, Any], player_index: int, mode: str) -> None:
     if mode not in ("rank", "suit"):
         raise ValueError("Sort mode must be 'rank' or 'suit'.")
     state["players"][player_index]["sort_mode"] = mode
-    state["round"]["hands"][player_index] = sort_cards(state["round"]["hands"][player_index], mode)
+    _sort_hand_for_player(state, player_index, keep_drawn_on_right=True)
 
 
 def rename_player(state: dict[str, Any], player_index: int, name: str) -> None:
@@ -715,6 +737,8 @@ def make_public_state(state: dict[str, Any], viewer: int) -> dict[str, Any]:
         "stock_count": len(round_state["stock"]),
         "discard_top": round_state["discard"][-1] if round_state["discard"] else None,
         "your_hand": list(round_state["hands"][viewer]),
+        "your_deadwood": evaluate_hand(round_state["hands"][viewer])["deadwood_value"],
+        "your_last_drawn": round_state["last_drawn"][viewer],
         "opponent_count": len(round_state["hands"][opponent]),
         "round_over": round_state["round_over"],
         "log": list(state["log"]),
