@@ -1,0 +1,83 @@
+"""Entry point for hosting or joining the LAN Gin Rummy application."""
+
+from __future__ import annotations
+
+import argparse
+import time
+
+from client_ui import connect_client, launch_client_ui, make_client_context
+from server import DEFAULT_PORT, make_server_context, process_one_event, start_server, stop_server
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line argument parser.
+
+    Returns:
+        Configured argument parser.
+    """
+    parser = argparse.ArgumentParser(description="Two-player LAN Gin Rummy")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--host", action="store_true", help="Host a new LAN match and join it locally.")
+    mode.add_argument("--join", metavar="HOST", help="Join an existing LAN match by host/IP.")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"TCP port. Default: {DEFAULT_PORT}")
+    parser.add_argument("--name", default="Player", help="Display name shown in the game UI.")
+    parser.add_argument("--seed", type=int, default=None, help="Optional deterministic seed for testing the host deck order.")
+    return parser
+
+
+def run_host(port: int, name: str, seed: int | None) -> None:
+    """Run host mode by starting the server and local client UI.
+
+    Args:
+        port: TCP port.
+        name: Local player display name.
+        seed: Optional deterministic deck seed.
+    """
+    server_context = make_server_context(port=port, seed=seed)
+    start_server(server_context)
+    time.sleep(0.1)
+
+    client_context = make_client_context("127.0.0.1", port, name)
+    connect_client(client_context)
+
+    banner = (
+        f"Hosting on {server_context['local_ip']}:{port}   "
+        f"Share that address with the other player."
+    )
+
+    def tick() -> None:
+        """Pump one server event inside the tkinter loop."""
+        process_one_event(server_context, timeout=0.001)
+
+    try:
+        launch_client_ui(client_context, host_banner=banner, tick_callback=tick)
+    finally:
+        stop_server(server_context)
+
+
+def run_client(host: str, port: int, name: str) -> None:
+    """Run join mode and open the GUI.
+
+    Args:
+        host: Remote server host or IP.
+        port: TCP port.
+        name: Player display name.
+    """
+    client_context = make_client_context(host, port, name)
+    connect_client(client_context)
+    banner = f"Connected to {host}:{port}"
+    launch_client_ui(client_context, host_banner=banner)
+
+
+def main() -> None:
+    """Parse arguments and start the requested mode."""
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.host:
+        run_host(port=args.port, name=args.name, seed=args.seed)
+    else:
+        run_client(host=args.join, port=args.port, name=args.name)
+
+
+if __name__ == "__main__":
+    main()
