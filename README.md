@@ -20,6 +20,7 @@ This project converts the original single-process Gin Rummy concept into a real 
 - `client_ui.py` - tkinter LAN client
 - `launch_host.ps1` - PowerShell helper for hosting
 - `launch_client.ps1` - PowerShell helper for joining
+- `ai_client.py` - built-in computer opponent that connects as a local second player
 
 ## Requirements
 
@@ -44,7 +45,23 @@ Or use:
 
 The host window will show the IP address that the other player should connect to.
 
-### 2. Joining machine
+### 2. Solo play versus the built-in computer
+
+Open PowerShell in the project folder and run:
+
+```powershell
+python .\app.py --host --ai --name "Host Player"
+```
+
+Or use:
+
+```powershell
+.\launch_host.ps1 -AI -Name "Host Player"
+```
+
+This starts the normal host UI and automatically connects a local computer opponent.
+
+### 3. Joining machine
 
 Open PowerShell in the same project folder and run:
 

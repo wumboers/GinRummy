@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import time
 
+from ai_client import start_ai_thread
 from client_ui import connect_client, launch_client_ui, make_client_context
 from server import DEFAULT_PORT, make_server_context, process_one_event, start_server, stop_server
 
@@ -21,11 +22,12 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--join", metavar="HOST", help="Join an existing LAN match by host/IP.")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"TCP port. Default: {DEFAULT_PORT}")
     parser.add_argument("--name", default="Player", help="Display name shown in the game UI.")
+    parser.add_argument("--ai", action="store_true", help="Host a solo match against a built-in computer player.")
     parser.add_argument("--seed", type=int, default=None, help="Optional deterministic seed for testing the host deck order.")
     return parser
 
 
-def run_host(port: int, name: str, seed: int | None) -> None:
+def run_host(port: int, name: str, seed: int | None, use_ai: bool = False) -> None:
     """Run host mode by starting the server and local client UI.
 
     Args:
@@ -40,10 +42,14 @@ def run_host(port: int, name: str, seed: int | None) -> None:
     client_context = make_client_context("127.0.0.1", port, name)
     connect_client(client_context)
 
-    banner = (
-        f"Hosting on {server_context['local_ip']}:{port}   "
-        f"Share that address with the other player."
-    )
+    if use_ai:
+        start_ai_thread("127.0.0.1", port, name="Computer")
+        banner = "Hosting locally versus Computer."
+    else:
+        banner = (
+            f"Hosting on {server_context['local_ip']}:{port}   "
+            f"Share that address with the other player."
+        )
 
     def tick() -> None:
         """Pump one server event inside the tkinter loop."""
@@ -74,7 +80,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     if args.host:
-        run_host(port=args.port, name=args.name, seed=args.seed)
+        run_host(port=args.port, name=args.name, seed=args.seed, use_ai=args.ai)
     else:
         run_client(host=args.join, port=args.port, name=args.name)
 
