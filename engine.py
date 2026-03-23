@@ -242,9 +242,12 @@ def _sort_hand_for_player(state: dict[str, Any], player_index: int, keep_drawn_o
     hand = list(round_state["hands"][player_index])
 
     if keep_drawn_on_right and last_drawn in hand:
-        hand.remove(last_drawn)
-        round_state["hands"][player_index] = sort_cards(hand, mode) + [last_drawn]
-        return
+        evaluation = evaluate_hand(hand)
+        melded_cards = {card for meld in evaluation["melds"] for card in meld}
+        if last_drawn not in melded_cards:
+            hand.remove(last_drawn)
+            round_state["hands"][player_index] = sort_cards(hand, mode) + [last_drawn]
+            return
 
     round_state["hands"][player_index] = sort_cards(hand, mode)
 

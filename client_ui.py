@@ -39,6 +39,7 @@ def make_client_context(host: str, port: int, name: str) -> dict[str, Any]:
         "state": None,
         "player_index": None,
         "selected_card": None,
+        "manual_hand_order": None,
         "status_message": "Connecting...",
         "server_error": None,
     }
@@ -160,6 +161,21 @@ def card_label(card: str) -> str:
     return f"{rank}{suit_map[suit]}"
 
 
+def card_rank_label(card: str) -> str:
+    """Return the rank text for a card."""
+    return card[1:]
+
+
+def card_suit_symbol(card: str) -> str:
+    """Return the suit symbol for a card."""
+    return {"C": "♣", "D": "♦", "H": "♥", "S": "♠"}[card[0]]
+
+
+def card_suit_hint(card: str) -> str:
+    """Return a short suit hint to improve readability."""
+    return {"C": "CLUB", "D": "DIAM", "H": "HEART", "S": "SPADE"}[card[0]]
+
+
 def suit_color(card: str) -> str:
     """Return a foreground color for a card.
 
@@ -172,23 +188,47 @@ def suit_color(card: str) -> str:
     return "#c62828" if card[0] in ("H", "D") else "#111111"
 
 
-def build_hand_visuals(cards: list[str], last_drawn: str | None) -> dict[str, dict[str, bool]]:
+def meld_palette() -> list[dict[str, str]]:
+    """Return the repeating color palette used for meld groups."""
+    return [
+        {"fill": "#dcfce7", "outline": "#16a34a", "label": "#166534"},
+        {"fill": "#dbeafe", "outline": "#2563eb", "label": "#1d4ed8"},
+        {"fill": "#fce7f3", "outline": "#db2777", "label": "#be185d"},
+        {"fill": "#ede9fe", "outline": "#7c3aed", "label": "#6d28d9"},
+    ]
+
+
+def build_hand_visuals(cards: list[str], last_drawn: str | None, melds: list[list[str]] | None = None) -> dict[str, dict[str, Any]]:
     """Compute local rendering hints for the visible hand.
 
     Args:
         cards: Visible hand cards.
         last_drawn: Most recently drawn card, if any.
+        melds: Optional explicit meld groups for this hand.
 
     Returns:
         Per-card visual flags used by the renderer.
     """
     evaluation = evaluate_hand(cards)
-    melded_cards = {card for meld in evaluation["melds"] for card in meld}
+    active_melds = melds if melds is not None else evaluation["melds"]
+    palette = meld_palette()
+    card_positions = {card: index for index, card in enumerate(cards)}
+    ordered_melds = sorted(
+        [list(meld) for meld in active_melds],
+        key=lambda meld: min(card_positions.get(card, 10**9) for card in meld),
+    )
+    meld_styles: dict[str, dict[str, str]] = {}
+    for index, meld in enumerate(ordered_melds):
+        style = palette[index % len(palette)]
+        for card in meld:
+            meld_styles[card] = style
+
     return {
         card: {
-            "melded": card in melded_cards,
+            "melded": card in meld_styles,
             "drawn": card == last_drawn,
             "deadwood": card in evaluation["deadwood"],
+            "meld_style": meld_styles.get(card),
         }
         for card in cards
     }
@@ -202,6 +242,7 @@ def draw_card(
     selected: bool,
     hidden: bool = False,
     melded: bool = False,
+    meld_style: dict[str, str] | None = None,
     drawn: bool = False,
     clickable: bool = False,
 ) -> None:
@@ -215,42 +256,47 @@ def draw_card(
         selected: Whether the card is selected.
         hidden: Whether to draw card back styling.
         melded: Whether the card belongs to a best meld group.
+        meld_style: Optional color style for the meld group.
         drawn: Whether this is the most recently drawn card.
         clickable: Whether the card or pile is currently actionable.
     """
     if hidden:
-        outline = "#ffd54f" if clickable else "#0d47a1"
-        width = 4 if clickable else 2
+        outline = "#d9c36a" if clickable else "#0d47a1"
+        width = 3 if clickable else 2
         canvas.create_rectangle(x, y, x + CARD_WIDTH, y + CARD_HEIGHT, fill="#1e88e5", outline=outline, width=width)
         canvas.create_text(x + CARD_WIDTH / 2, y + CARD_HEIGHT / 2, text="GIN", fill="white", font=("Segoe UI", 12, "bold"))
         return
 
     fill = "#f7f7f7"
     if melded:
-        fill = "#dcfce7"
-    if drawn:
+        fill = meld_style["fill"] if meld_style is not None else "#dcfce7"
+    elif drawn:
         fill = "#fff8dc"
 
     if selected:
         outline = "#ffd54f"
         width = 4
+    elif melded:
+        outline = meld_style["outline"] if meld_style is not None else "#16a34a"
+        width = 3
     elif drawn:
         outline = "#f59e0b"
         width = 3
-    elif melded:
-        outline = "#16a34a"
-        width = 3
     elif clickable:
-        outline = "#ffd54f"
+        outline = "#d9c36a"
         width = 3
     else:
         outline = "#1b5e20"
         width = 2
 
     canvas.create_rectangle(x, y, x + CARD_WIDTH, y + CARD_HEIGHT, fill=fill, outline=outline, width=width)
-    canvas.create_text(x + CARD_WIDTH / 2, y + 16, text=card_label(card), fill=suit_color(card), font=("Segoe UI", 12, "bold"))
+    color = suit_color(card)
+    canvas.create_text(x + CARD_WIDTH / 2, y + 13, text=card_rank_label(card), fill=color, font=("Segoe UI", 15, "bold"))
+    canvas.create_text(x + CARD_WIDTH / 2, y + 37, text=card_suit_symbol(card), fill=color, font=("Segoe UI Symbol", 24, "bold"))
+    canvas.create_text(x + CARD_WIDTH / 2, y + 57, text=card_suit_hint(card), fill=color, font=("Segoe UI", 7, "bold"))
     if melded:
-        canvas.create_text(x + CARD_WIDTH / 2, y + CARD_HEIGHT - 12, text="MELD", fill="#166534", font=("Segoe UI", 8, "bold"))
+        label_color = meld_style["label"] if meld_style is not None else "#166534"
+        canvas.create_text(x + CARD_WIDTH / 2, y + CARD_HEIGHT - 12, text="MELD", fill=label_color, font=("Segoe UI", 8, "bold"))
     elif drawn:
         canvas.create_text(x + CARD_WIDTH / 2, y + CARD_HEIGHT - 12, text="NEW", fill="#b45309", font=("Segoe UI", 8, "bold"))
 
@@ -309,6 +355,45 @@ def pile_is_actionable(state: dict[str, Any], pile: str) -> bool:
             return False
         return pile in {"stock", "discard"}
     return False
+
+
+def can_reorder_hand(state: dict[str, Any]) -> bool:
+    """Return whether the local player may manually reorder their hand."""
+    return (
+        not state["round_over"]
+        and len(state["your_hand"]) == 10
+        and not (state["turn"] == state["you"] and state["stage"] == "discard")
+    )
+
+
+def sync_manual_hand_order(context: dict[str, Any], state: dict[str, Any]) -> None:
+    """Keep local manual hand order aligned with the latest server state."""
+    server_hand = list(state["your_hand"])
+    manual_order = context.get("manual_hand_order")
+
+    if not can_reorder_hand(state):
+        context["manual_hand_order"] = None
+        context["selected_card"] = None
+        return
+
+    if manual_order is None:
+        context["manual_hand_order"] = list(server_hand)
+        return
+
+    filtered = [card for card in manual_order if card in server_hand]
+    for card in server_hand:
+        if card not in filtered:
+            filtered.append(card)
+    context["manual_hand_order"] = filtered
+
+
+def get_display_hand(state: dict[str, Any], context: dict[str, Any]) -> list[str]:
+    """Return the hand order currently shown to the local player."""
+    if can_reorder_hand(state) and context.get("manual_hand_order"):
+        manual_order = [card for card in context["manual_hand_order"] if card in state["your_hand"]]
+        if len(manual_order) == len(state["your_hand"]):
+            return manual_order
+    return list(state["your_hand"])
 
 
 def launch_client_ui(context: dict[str, Any], host_banner: str | None = None, tick_callback=None) -> None:
@@ -389,8 +474,28 @@ def launch_client_ui(context: dict[str, Any], host_banner: str | None = None, ti
             send_action(context, "draw_discard")
             return
 
+        display_hand = get_display_hand(state, context)
+        hand_visuals = build_hand_visuals(display_hand, state.get("your_last_drawn"))
         for card, box in model["your_boxes"]:
             if point_in_box(x, y, box):
+                if can_reorder_hand(state):
+                    visuals = hand_visuals.get(card, {})
+                    if visuals.get("melded", False):
+                        return
+                    selected = context.get("selected_card")
+                    if selected == card:
+                        context["selected_card"] = None
+                    elif selected is None:
+                        context["selected_card"] = card
+                    else:
+                        order = list(context.get("manual_hand_order") or display_hand)
+                        first_index = order.index(selected)
+                        second_index = order.index(card)
+                        order[first_index], order[second_index] = order[second_index], order[first_index]
+                        context["manual_hand_order"] = order
+                        context["selected_card"] = None
+                    render_state(model, context)
+                    return
                 if state["turn"] == state["you"] and state["stage"] == "discard":
                     context["selected_card"] = card
                     send_action(context, "discard", card=card)
@@ -412,6 +517,7 @@ def launch_client_ui(context: dict[str, Any], host_banner: str | None = None, ti
                     context["player_index"] = message.get("player")
                 elif message_type == "state":
                     context["state"] = message["state"]
+                    sync_manual_hand_order(context, context["state"])
                     context["status_message"] = compute_status_text(context["state"])
                     status_var.set(context["status_message"])
                     render_state(model, context)
@@ -467,15 +573,11 @@ def render_state(model: dict[str, Any], context: dict[str, Any]) -> None:
     discard_box = model["discard_box"]
     stock_actionable = pile_is_actionable(state, "stock")
     discard_actionable = pile_is_actionable(state, "discard")
-    if stock_actionable:
-        canvas.create_rectangle(stock_box[0] - 6, stock_box[1] - 6, stock_box[2] + 6, stock_box[3] + 6, outline="#fde047", width=3)
-    stock_label_color = "#ffd54f" if stock_actionable else "white"
-    discard_label_color = "#ffd54f" if discard_actionable else "white"
+    stock_label_color = "#f6e58d" if stock_actionable else "white"
+    discard_label_color = "#f6e58d" if discard_actionable else "white"
     canvas.create_text(stock_box[0] + CARD_WIDTH / 2, stock_box[1] - 14, text=f"Stock ({state['stock_count']})", fill=stock_label_color, font=("Segoe UI", 12, "bold"))
     draw_card(canvas, stock_box[0], stock_box[1], "XX", selected=False, hidden=True, clickable=stock_actionable)
 
-    if discard_actionable:
-        canvas.create_rectangle(discard_box[0] - 6, discard_box[1] - 6, discard_box[2] + 6, discard_box[3] + 6, outline="#fde047", width=3)
     canvas.create_text(discard_box[0] + CARD_WIDTH / 2, discard_box[1] - 14, text="Discard", fill=discard_label_color, font=("Segoe UI", 12, "bold"))
     if state["discard_top"]:
         draw_card(canvas, discard_box[0], discard_box[1], state["discard_top"], selected=False, hidden=False, clickable=discard_actionable)
@@ -483,11 +585,14 @@ def render_state(model: dict[str, Any], context: dict[str, Any]) -> None:
         canvas.create_rectangle(discard_box[0], discard_box[1], discard_box[2], discard_box[3], outline="white", width=2)
 
     deadwood_color = "#bbf7d0" if state["your_deadwood"] <= 10 else "#fff3cd"
-    hand_visuals = build_hand_visuals(state["your_hand"], state.get("your_last_drawn"))
+    display_hand = get_display_hand(state, context)
+    hand_visuals = build_hand_visuals(display_hand, state.get("your_last_drawn"))
     canvas.create_text(120, 476, text="Legend: green=MELD   gold=NEW", fill="#d1fae5", font=("Segoe UI", 10, "bold"), anchor="w")
     canvas.create_text(120, 500, text=f"{your_name}", fill="white", font=("Segoe UI", 14, "bold"), anchor="w")
     canvas.create_text(250, 500, text=f"Deadwood: {state['your_deadwood']}", fill=deadwood_color, font=("Segoe UI", 13, "bold"), anchor="w")
-    your_boxes = hand_hitboxes(state["your_hand"], 120, 525)
+    if can_reorder_hand(state):
+        canvas.create_text(430, 500, text="Click two deadwood cards to swap positions", fill="#d1fae5", font=("Segoe UI", 10, "bold"), anchor="w")
+    your_boxes = hand_hitboxes(display_hand, 120, 525)
     model["your_boxes"] = your_boxes
     for card, box in your_boxes:
         x1, y1, _, _ = box
@@ -500,6 +605,7 @@ def render_state(model: dict[str, Any], context: dict[str, Any]) -> None:
             selected=context.get("selected_card") == card,
             hidden=False,
             melded=bool(visuals.get("melded", False)),
+            meld_style=visuals.get("meld_style"),
             drawn=bool(visuals.get("drawn", False)),
             clickable=state["turn"] == you and state["stage"] == "discard",
         )
@@ -542,14 +648,38 @@ def render_round_summary(canvas: tk.Canvas, state: dict[str, Any]) -> None:
 
     y_cards = revealed_hands[you]
     o_cards = revealed_hands[opponent]
+    knocker = summary["knocker"]
+    defender = summary["defender"]
+    your_melds = summary["knocker_eval"]["melds"] if you == knocker else summary["defender_eval"]["melds"]
+    opponent_melds = summary["knocker_eval"]["melds"] if opponent == knocker else summary["defender_eval"]["melds"]
+    your_visuals = build_hand_visuals(y_cards, last_drawn=None, melds=your_melds)
+    opponent_visuals = build_hand_visuals(o_cards, last_drawn=None, melds=opponent_melds)
 
     canvas.create_text(110, 220, text=f"{opponent_name} revealed hand", fill="white", font=("Segoe UI", 12, "bold"), anchor="w")
     for index, card in enumerate(o_cards):
-        draw_card(canvas, 110 + index * (CARD_WIDTH - 10), 236, card, selected=False)
+        visuals = opponent_visuals.get(card, {})
+        draw_card(
+            canvas,
+            110 + index * (CARD_WIDTH - 10),
+            236,
+            card,
+            selected=False,
+            melded=bool(visuals.get("melded", False)),
+            meld_style=visuals.get("meld_style"),
+        )
 
     canvas.create_text(110, 344, text=f"{your_name} revealed hand", fill="white", font=("Segoe UI", 12, "bold"), anchor="w")
     for index, card in enumerate(y_cards):
-        draw_card(canvas, 110 + index * (CARD_WIDTH - 10), 360, card, selected=False)
+        visuals = your_visuals.get(card, {})
+        draw_card(
+            canvas,
+            110 + index * (CARD_WIDTH - 10),
+            360,
+            card,
+            selected=False,
+            melded=bool(visuals.get("melded", False)),
+            meld_style=visuals.get("meld_style"),
+        )
 
     canvas.create_text(
         110,
