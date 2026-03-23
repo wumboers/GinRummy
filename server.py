@@ -30,6 +30,13 @@ def _hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
+def _sanitize_chat_message(message: str) -> str:
+    """Return a safe plain-text chat message without control characters."""
+    collapsed = " ".join(str(message).replace("\r", " ").replace("\n", " ").split())
+    sanitized = "".join(ch for ch in collapsed if ch.isprintable())
+    return sanitized[:300]
+
+
 def make_server_context(host: str = "0.0.0.0", port: int = DEFAULT_PORT, seed: int | None = None, password: str = "") -> dict[str, Any]:
     """Create a mutable server context.
 
@@ -263,6 +270,14 @@ def handle_client_message(context: dict[str, Any], player_index: int, message: d
             set_pending_knock(context["state"], player_index, bool(message.get("value", False)))
         elif action == "sort":
             set_sort_mode(context["state"], player_index, str(message.get("mode", "rank")))
+        elif action == "chat":
+            clean_message = _sanitize_chat_message(str(message.get("message", "")))
+            if not clean_message:
+                raise ValueError("Chat message cannot be empty.")
+            chat_log = context["state"].setdefault("chat_log", [])
+            speaker = context["state"]["players"][player_index]["name"]
+            chat_log.append(f"{speaker}: {clean_message}")
+            context["state"]["chat_log"] = chat_log[-60:]
         elif action == "continue":
             continue_after_round(context["state"])
         else:

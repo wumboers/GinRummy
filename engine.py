@@ -161,6 +161,7 @@ def make_initial_state(seed: int | None = None) -> dict[str, Any]:
         "game_over": False,
         "winner": None,
         "log": ["Match created."],
+        "chat_log": [],
         "players": [
             {"name": "Player 1", "sort_mode": "rank"},
             {"name": "Player 2", "sort_mode": "rank"},
@@ -742,6 +743,7 @@ def make_public_state(state: dict[str, Any], viewer: int) -> dict[str, Any]:
         "opponent_count": len(round_state["hands"][opponent]),
         "round_over": round_state["round_over"],
         "log": list(state["log"]),
+        "chat_log": list(state.get("chat_log", [])),
         "sort_mode": state["players"][viewer].get("sort_mode", "rank"),
     }
 

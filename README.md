@@ -113,6 +113,58 @@ Or use:
 
 Replace `192.168.1.50` with the host machine's LAN IP.
 
+## Internet Play with Tailscale
+
+This game can also be played over the internet with [Tailscale](https://tailscale.com/) without changing the basic host/join flow.
+
+### 1. Install Tailscale on both computers
+
+- install Tailscale on both machines
+- sign in to the same tailnet
+
+### 2. Find the host machine's Tailscale IP
+
+On the host machine:
+
+```powershell
+tailscale ip -4
+```
+
+This will usually return an IP like `100.x.y.z`.
+
+### 3. Start the host with a shared password
+
+```powershell
+python .\app.py --host --name "Dad" --password "shared-secret"
+```
+
+Or:
+
+```powershell
+.\launch_host.ps1 -Name "Dad" -Password "shared-secret"
+```
+
+### 4. Join from the other computer
+
+```powershell
+python .\app.py --join 100.x.y.z --name "You" --password "shared-secret"
+```
+
+Or:
+
+```powershell
+.\launch_client.ps1 -Host 100.x.y.z -Name "You" -Password "shared-secret"
+```
+
+Replace `100.x.y.z` with the host machine's Tailscale IP.
+
+### Notes
+
+- no router port forwarding is required
+- the game still uses the same TCP host/client model as LAN play
+- the shared password must match on both sides
+- if connection fails, confirm both machines are online in Tailscale with `tailscale status`
+
 ## Controls
 
 - **Draw from stock**: click the stock pile

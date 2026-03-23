@@ -111,6 +111,15 @@ def send_action(context: dict[str, Any], action: str, **payload: Any) -> None:
     send_message(context["socket"], {"type": "action", "action": action, **payload})
 
 
+def send_chat(context: dict[str, Any], entry: tk.Entry) -> None:
+    """Send one chat message from the input field."""
+    message = entry.get().strip()
+    if not message:
+        return
+    send_action(context, "chat", message=message)
+    entry.delete(0, "end")
+
+
 def compute_status_text(state: dict[str, Any]) -> str:
     """Build the main status line for the local player.
 
@@ -443,14 +452,26 @@ def launch_client_ui(context: dict[str, Any], host_banner: str | None = None, ti
     tk.Button(controls, text="New Match", width=18, command=lambda: send_action(context, "continue")).pack(pady=3)
 
     tk.Label(right, text="Event Log", fg="white", bg="#0b5d2a", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-    log_box = tk.Text(right, width=34, height=35, state="disabled", bg="#073b1c", fg="white", wrap="word")
-    log_box.pack(fill="both", expand=True)
+    log_box = tk.Text(right, width=34, height=17, state="disabled", bg="#073b1c", fg="white", wrap="word")
+    log_box.pack(fill="x", expand=False)
+
+    tk.Label(right, text="Chat", fg="white", bg="#0b5d2a", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(10, 0))
+    chat_box = tk.Text(right, width=34, height=13, state="disabled", bg="#052b15", fg="white", wrap="word")
+    chat_box.pack(fill="both", expand=True)
+
+    chat_entry_row = tk.Frame(right, bg="#0b5d2a")
+    chat_entry_row.pack(fill="x", pady=(6, 0))
+    chat_entry = tk.Entry(chat_entry_row)
+    chat_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+    tk.Button(chat_entry_row, text="Send", width=8, command=lambda: send_chat(context, chat_entry)).pack(side="right")
+    chat_entry.bind("<Return>", lambda _event: send_chat(context, chat_entry))
 
     model = {
         "canvas": canvas,
         "status_var": status_var,
         "info_var": info_var,
         "log_box": log_box,
+        "chat_box": chat_box,
         "your_boxes": [],
         "stock_box": (330, 270, 330 + CARD_WIDTH, 270 + CARD_HEIGHT),
         "discard_box": (430, 270, 430 + CARD_WIDTH, 270 + CARD_HEIGHT),
@@ -549,6 +570,7 @@ def render_state(model: dict[str, Any], context: dict[str, Any]) -> None:
     """
     canvas: tk.Canvas = model["canvas"]
     log_box: tk.Text = model["log_box"]
+    chat_box: tk.Text = model["chat_box"]
     state = context.get("state")
     canvas.delete("all")
 
@@ -624,6 +646,13 @@ def render_state(model: dict[str, Any], context: dict[str, Any]) -> None:
         log_box.insert("end", f"• {line}\n")
     log_box.configure(state="disabled")
     log_box.see("end")
+
+    chat_box.configure(state="normal")
+    chat_box.delete("1.0", "end")
+    for line in state.get("chat_log", []):
+        chat_box.insert("end", f"{line}\n")
+    chat_box.configure(state="disabled")
+    chat_box.see("end")
 
 
 def render_round_summary(canvas: tk.Canvas, state: dict[str, Any]) -> None:
