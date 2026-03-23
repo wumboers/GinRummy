@@ -73,6 +73,8 @@ class AIClient:
                 messages, buffer = recv_messages(self.sock, buffer)
                 for message in messages:
                     self.handle_message(message)
+        except ValueError:
+            pass
         except (ConnectionError, OSError):
             pass
         finally:

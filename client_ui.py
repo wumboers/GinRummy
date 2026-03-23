@@ -92,6 +92,8 @@ def reader_loop(context: dict[str, Any]) -> None:
             messages, buffer = recv_messages(context["socket"], buffer)
             for message in messages:
                 context["reader_queue"].put(message)
+    except ValueError:
+        context["reader_queue"].put({"type": "fatal", "message": "Received malformed or oversized server message."})
     except (ConnectionError, OSError):
         context["reader_queue"].put({"type": "fatal", "message": "Disconnected from server."})
     finally:
