@@ -10,6 +10,11 @@ import tkinter as tk
 from tkinter import messagebox
 from typing import Any
 
+try:
+    import winsound
+except ImportError:  # pragma: no cover - winsound is Windows-only.
+    winsound = None
+
 from engine import evaluate_hand
 from net import create_client_socket, recv_messages, send_message
 
@@ -46,6 +51,7 @@ def make_client_context(host: str, port: int, name: str, password: str = "") -> 
         "status_message": "Connecting...",
         "server_error": None,
         "last_state_sync_monotonic": None,
+        "was_actionable": False,
     }
 
 
@@ -179,6 +185,26 @@ def compute_timer_text(context: dict[str, Any]) -> str:
 
     active_name = state["players"][state["turn"]]["name"]
     return f"Turn timer: {remaining:.1f}s left for {active_name}"
+
+
+def player_can_act(state: dict[str, Any]) -> bool:
+    """Return whether the local player currently needs to act."""
+    you = state["you"]
+    if state["round_over"]:
+        return False
+    if state["stage"] == "offer_first_upcard":
+        return state["offered_to"] == you
+    if state["stage"] in {"draw", "discard"}:
+        return state["turn"] == you
+    return False
+
+
+def play_turn_chime(root: tk.Tk) -> None:
+    """Play a small local notification sound for the active player."""
+    if winsound is not None:
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
+        return
+    root.bell()
 
 
 def card_label(card: str) -> str:
@@ -569,6 +595,10 @@ def launch_client_ui(context: dict[str, Any], host_banner: str | None = None, ti
                 elif message_type == "state":
                     context["state"] = message["state"]
                     context["last_state_sync_monotonic"] = time.monotonic()
+                    is_actionable = player_can_act(context["state"])
+                    if is_actionable and not context.get("was_actionable", False):
+                        play_turn_chime(root)
+                    context["was_actionable"] = is_actionable
                     sync_manual_hand_order(context, context["state"])
                     context["status_message"] = compute_status_text(context["state"])
                     status_var.set(context["status_message"])
