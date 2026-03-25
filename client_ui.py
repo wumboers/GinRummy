@@ -5,6 +5,7 @@ from __future__ import annotations
 import queue
 import socket
 import threading
+import time
 import tkinter as tk
 from tkinter import messagebox
 from typing import Any
@@ -44,6 +45,7 @@ def make_client_context(host: str, port: int, name: str, password: str = "") -> 
         "manual_hand_order": None,
         "status_message": "Connecting...",
         "server_error": None,
+        "last_state_sync_monotonic": None,
     }
 
 
@@ -92,6 +94,8 @@ def reader_loop(context: dict[str, Any]) -> None:
             messages, buffer = recv_messages(context["socket"], buffer)
             for message in messages:
                 context["reader_queue"].put(message)
+    except ValueError:
+        context["reader_queue"].put({"type": "fatal", "message": "Received malformed or oversized server message."})
     except (ConnectionError, OSError):
         context["reader_queue"].put({"type": "fatal", "message": "Disconnected from server."})
     finally:
@@ -146,6 +150,8 @@ def compute_status_text(state: dict[str, Any]) -> str:
         return f"Opening discard is being offered to {opponent_name}."
     if state["stage"] == "draw":
         if state["turn"] == you:
+            if state.get("must_draw_from_stock"):
+                return f"{your_name}: both players passed. You must draw from Stock."
             return f"{your_name}: draw from Stock or Discard."
         return f"Waiting for {turn_name} to draw."
     if state["stage"] == "discard":
@@ -155,6 +161,24 @@ def compute_status_text(state: dict[str, Any]) -> str:
             return f"{your_name}: choose a card to discard, or arm Knock first."
         return f"Waiting for {turn_name} to discard."
     return "Connected."
+
+
+def compute_timer_text(context: dict[str, Any]) -> str:
+    """Build the turn-timer line shown under the main status text."""
+    state = context.get("state")
+    if not state:
+        return ""
+    timeout_seconds = int(state.get("turn_timeout_seconds") or 0)
+    remaining = state.get("turn_time_remaining")
+    if timeout_seconds <= 0 or remaining is None or state.get("round_over"):
+        return ""
+
+    synced_at = context.get("last_state_sync_monotonic")
+    if synced_at is not None:
+        remaining = max(0.0, float(remaining) - (time.monotonic() - synced_at))
+
+    active_name = state["players"][state["turn"]]["name"]
+    return f"Turn timer: {remaining:.1f}s left for {active_name}"
 
 
 def card_label(card: str) -> str:
@@ -360,6 +384,8 @@ def pile_is_actionable(state: dict[str, Any], pile: str) -> bool:
     if state["round_over"] or state["turn"] != you:
         return False
     if state["stage"] == "draw":
+        if state.get("must_draw_from_stock"):
+            return pile == "stock"
         return pile in {"stock", "discard"}
     if state["stage"] == "offer_first_upcard":
         if state["offered_to"] != you:
@@ -421,6 +447,7 @@ def launch_client_ui(context: dict[str, Any], host_banner: str | None = None, ti
     root.configure(bg="#0b5d2a")
 
     status_var = tk.StringVar(value=context["status_message"])
+    timer_var = tk.StringVar(value="")
     info_var = tk.StringVar(value=host_banner or "")
 
     top_frame = tk.Frame(root, bg="#0b5d2a")
@@ -428,6 +455,7 @@ def launch_client_ui(context: dict[str, Any], host_banner: str | None = None, ti
 
     tk.Label(top_frame, textvariable=info_var, fg="white", bg="#0b5d2a", font=("Segoe UI", 11, "bold")).pack(anchor="w")
     tk.Label(top_frame, textvariable=status_var, fg="#fff3cd", bg="#0b5d2a", font=("Segoe UI", 10)).pack(anchor="w", pady=(4, 0))
+    tk.Label(top_frame, textvariable=timer_var, fg="#d1fae5", bg="#0b5d2a", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(2, 0))
 
     center = tk.Frame(root, bg="#0b5d2a")
     center.pack(fill="both", expand=True, padx=8, pady=(0, 8))
@@ -540,9 +568,11 @@ def launch_client_ui(context: dict[str, Any], host_banner: str | None = None, ti
                     context["player_index"] = message.get("player")
                 elif message_type == "state":
                     context["state"] = message["state"]
+                    context["last_state_sync_monotonic"] = time.monotonic()
                     sync_manual_hand_order(context, context["state"])
                     context["status_message"] = compute_status_text(context["state"])
                     status_var.set(context["status_message"])
+                    timer_var.set(compute_timer_text(context))
                     render_state(model, context)
                 elif message_type == "error":
                     context["server_error"] = message.get("message", "Unknown server error.")
@@ -553,6 +583,7 @@ def launch_client_ui(context: dict[str, Any], host_banner: str | None = None, ti
                     return
         except queue.Empty:
             pass
+        timer_var.set(compute_timer_text(context))
         root.after(50, poll_messages)
 
     root.protocol("WM_DELETE_WINDOW", on_close)

@@ -73,6 +73,8 @@ Open PowerShell in the project folder and run:
 python .\app.py --host --name "Host Player"
 ```
 
+Add `--turn-timeout 90` to enforce a 90-second turn limit. Use `0` to leave the timer off.
+
 Or use:
 
 ```powershell
@@ -142,6 +144,12 @@ Or:
 
 ```powershell
 .\launch_host.ps1 -Name "Dad" -Password "shared-secret"
+```
+
+To enforce a turn timer while hosting over Tailscale:
+
+```powershell
+python .\app.py --host --name "Dad" --password "shared-secret" --turn-timeout 90
 ```
 
 ### 4. Join from the other computer

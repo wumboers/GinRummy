@@ -8,6 +8,7 @@ from typing import Any
 
 
 BUFFER_SIZE = 65536
+MAX_MESSAGE_BYTES = 16384
 
 
 def send_message(sock: socket.socket, payload: dict[str, Any]) -> None:
@@ -36,11 +37,17 @@ def recv_messages(sock: socket.socket, buffer: bytes) -> tuple[list[dict[str, An
         raise ConnectionError("Socket closed by peer.")
 
     data = buffer + chunk
+    if len(data) > MAX_MESSAGE_BYTES and b"\n" not in data:
+        raise ValueError("Message too large.")
     parts = data.split(b"\n")
     messages: list[dict[str, Any]] = []
     for raw in parts[:-1]:
         if raw.strip():
+            if len(raw) > MAX_MESSAGE_BYTES:
+                raise ValueError("Message too large.")
             messages.append(json.loads(raw.decode("utf-8")))
+    if len(parts[-1]) > MAX_MESSAGE_BYTES:
+        raise ValueError("Message too large.")
     return messages, parts[-1]
 
 

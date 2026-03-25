@@ -73,6 +73,8 @@ class AIClient:
                 messages, buffer = recv_messages(self.sock, buffer)
                 for message in messages:
                     self.handle_message(message)
+        except ValueError:
+            pass
         except (ConnectionError, OSError):
             pass
         finally:
@@ -163,6 +165,8 @@ class AIClient:
             return {"action": "draw_stock", "payload": {}}
 
         if stage == "draw":
+            if state.get("must_draw_from_stock"):
+                return {"action": "draw_stock", "payload": {}}
             if discard_top and self.should_take_discard(hand, str(discard_top), opening_offer=False):
                 return {"action": "draw_discard", "payload": {}}
             return {"action": "draw_stock", "payload": {}}
