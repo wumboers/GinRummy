@@ -150,6 +150,8 @@ def compute_status_text(state: dict[str, Any]) -> str:
         return f"Opening discard is being offered to {opponent_name}."
     if state["stage"] == "draw":
         if state["turn"] == you:
+            if state.get("must_draw_from_stock"):
+                return f"{your_name}: both players passed. You must draw from Stock."
             return f"{your_name}: draw from Stock or Discard."
         return f"Waiting for {turn_name} to draw."
     if state["stage"] == "discard":
@@ -382,6 +384,8 @@ def pile_is_actionable(state: dict[str, Any], pile: str) -> bool:
     if state["round_over"] or state["turn"] != you:
         return False
     if state["stage"] == "draw":
+        if state.get("must_draw_from_stock"):
+            return pile == "stock"
         return pile in {"stock", "discard"}
     if state["stage"] == "offer_first_upcard":
         if state["offered_to"] != you:

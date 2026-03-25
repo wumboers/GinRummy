@@ -253,6 +253,11 @@ def _sort_hand_for_player(state: dict[str, Any], player_index: int, keep_drawn_o
     round_state["hands"][player_index] = sort_cards(hand, mode)
 
 
+def must_draw_from_stock(round_state: dict[str, Any]) -> bool:
+    """Return whether the opening upcard was declined by both players."""
+    return round_state["stage"] == "draw" and len(round_state["first_upcard_declines"]) == 2
+
+
 def get_current_turn(state: dict[str, Any]) -> int:
     """Return the current player index.
 
@@ -579,8 +584,9 @@ def draw_from_stock(state: dict[str, Any], player_index: int) -> None:
             append_log(state, f"Opening discard is now offered to {state['players'][1 - offered_to]['name']}.")
             return
         round_state["stage"] = "draw"
-        round_state["turn"] = state["dealer"]
-        append_log(state, f"Both players declined the opening discard. {state['players'][state['dealer']]['name']} must draw from stock.")
+        round_state["turn"] = 1 - state["dealer"]
+        append_log(state, f"Both players declined the opening discard. {state['players'][1 - state['dealer']]['name']} must draw from stock.")
+        return
 
     if not round_state["stock"]:
         raise ValueError("The stock pile is empty.")
@@ -610,6 +616,9 @@ def draw_from_discard(state: dict[str, Any], player_index: int) -> None:
 
     if not round_state["discard"]:
         raise ValueError("Discard pile is empty.")
+
+    if must_draw_from_stock(round_state):
+        raise ValueError("You must draw from stock after both players decline the opening discard.")
 
     if round_state["stage"] == "offer_first_upcard" and player_index != round_state["offered_to"]:
         raise ValueError("The opening discard is not currently offered to you.")
@@ -737,6 +746,7 @@ def make_public_state(state: dict[str, Any], viewer: int) -> dict[str, Any]:
         "pending_knock": round_state["pending_knock"] and round_state["turn"] == viewer,
         "stock_count": len(round_state["stock"]),
         "discard_top": round_state["discard"][-1] if round_state["discard"] else None,
+        "must_draw_from_stock": must_draw_from_stock(round_state),
         "your_hand": list(round_state["hands"][viewer]),
         "your_deadwood": evaluate_hand(round_state["hands"][viewer])["deadwood_value"],
         "your_last_drawn": round_state["last_drawn"][viewer],
