@@ -52,6 +52,7 @@ def make_client_context(host: str, port: int, name: str, password: str = "") -> 
         "server_error": None,
         "last_state_sync_monotonic": None,
         "was_actionable": False,
+        "last_round_sound_key": None,
     }
 
 
@@ -205,6 +206,67 @@ def play_turn_chime(root: tk.Tk) -> None:
         winsound.MessageBeep(winsound.MB_ICONASTERISK)
         return
     root.bell()
+
+
+def play_round_result_sound(root: tk.Tk, reason: str) -> None:
+    """Play a distinct local sound for gin and standard knock results."""
+    if winsound is not None:
+        if reason == "gin":
+            winsound.PlaySound("SystemExit", winsound.SND_ALIAS | winsound.SND_ASYNC)
+            return
+        if reason == "knock":
+            winsound.PlaySound("SystemExclamation", winsound.SND_ALIAS | winsound.SND_ASYNC)
+            return
+    root.bell()
+
+
+def maybe_play_round_result_sound(root: tk.Tk, context: dict[str, Any], state: dict[str, Any]) -> None:
+    """Play a round-end sound once per resolved round."""
+    summary = state.get("summary")
+    if not state.get("round_over") or not isinstance(summary, dict):
+        return
+
+    reason = str(summary.get("reason", ""))
+    if reason not in {"gin", "knock"}:
+        return
+
+    sound_key = (state.get("round_index"), reason, summary.get("round_winner"))
+    if context.get("last_round_sound_key") == sound_key:
+        return
+
+    context["last_round_sound_key"] = sound_key
+    play_round_result_sound(root, reason)
+
+
+def update_control_visibility(model: dict[str, Any], state: dict[str, Any] | None) -> None:
+    """Enable control buttons only when they are valid."""
+    knock_button = model["knock_button"]
+    cancel_knock_button = model["cancel_knock_button"]
+    continue_button = model["continue_button"]
+    new_match_button = model["new_match_button"]
+    if state is None:
+        knock_button.configure(state="disabled")
+        cancel_knock_button.configure(state="disabled")
+        continue_button.configure(state="disabled")
+        new_match_button.configure(state="disabled")
+        return
+
+    can_manage_knock = (
+        not state["round_over"]
+        and state["turn"] == state["you"]
+        and state["stage"] == "discard"
+    )
+    knock_button.configure(state="normal" if can_manage_knock and not state["pending_knock"] else "disabled")
+    cancel_knock_button.configure(state="normal" if can_manage_knock and state["pending_knock"] else "disabled")
+    continue_button.configure(state="normal" if state["round_over"] and not state["game_over"] else "disabled")
+    new_match_button.configure(state="normal" if state["game_over"] else "disabled")
+
+
+def match_tally_text(state: dict[str, Any], you: int) -> str:
+    """Return the running best-of-many match tally for the local view."""
+    wins = state.get("match_wins", [0, 0])
+    opponent = 1 - you
+    return f"Matches: {state['players'][you]['name']} {wins[you]} - {wins[opponent]} {state['players'][opponent]['name']}"
 
 
 def card_label(card: str) -> str:
@@ -362,6 +424,14 @@ def draw_card(
         canvas.create_text(x + CARD_WIDTH / 2, y + CARD_HEIGHT - 12, text="NEW", fill="#b45309", font=("Segoe UI", 8, "bold"))
 
 
+def draw_compact_card(canvas: tk.Canvas, x: int, y: int, card: str, highlight: bool = False) -> None:
+    """Draw a compact card chip for the layoff summary."""
+    fill = "#fff7d6" if highlight else "#f7f7f7"
+    outline = "#f59e0b" if highlight else "#93a4b7"
+    canvas.create_rectangle(x, y, x + 34, y + 22, fill=fill, outline=outline, width=2 if highlight else 1)
+    canvas.create_text(x + 17, y + 11, text=card_label(card), fill=suit_color(card), font=("Segoe UI Symbol", 9, "bold"))
+
+
 def hand_hitboxes(cards: list[str], start_x: int, start_y: int) -> list[tuple[str, tuple[int, int, int, int]]]:
     """Build hitboxes for a horizontal hand layout.
 
@@ -441,6 +511,8 @@ def sync_manual_hand_order(context: dict[str, Any], state: dict[str, Any]) -> No
 
     if manual_order is None:
         context["manual_hand_order"] = list(server_hand)
+        if context.get("selected_card") not in server_hand:
+            context["selected_card"] = None
         return
 
     filtered = [card for card in manual_order if card in server_hand]
@@ -448,6 +520,8 @@ def sync_manual_hand_order(context: dict[str, Any], state: dict[str, Any]) -> No
         if card not in filtered:
             filtered.append(card)
     context["manual_hand_order"] = filtered
+    if context.get("selected_card") not in filtered:
+        context["selected_card"] = None
 
 
 def get_display_hand(state: dict[str, Any], context: dict[str, Any]) -> list[str]:
@@ -500,10 +574,14 @@ def launch_client_ui(context: dict[str, Any], host_banner: str | None = None, ti
 
     tk.Button(controls, text="Sort by Rank", width=18, command=lambda: send_action(context, "sort", mode="rank")).pack(pady=3)
     tk.Button(controls, text="Sort by Suit", width=18, command=lambda: send_action(context, "sort", mode="suit")).pack(pady=3)
-    tk.Button(controls, text="Knock", width=18, command=lambda: send_action(context, "set_knock", value=True)).pack(pady=3)
-    tk.Button(controls, text="Cancel Knock", width=18, command=lambda: send_action(context, "set_knock", value=False)).pack(pady=3)
-    tk.Button(controls, text="Continue Round", width=18, command=lambda: send_action(context, "continue")).pack(pady=3)
-    tk.Button(controls, text="New Match", width=18, command=lambda: send_action(context, "continue")).pack(pady=3)
+    knock_button = tk.Button(controls, text="Knock", width=18, command=lambda: send_action(context, "set_knock", value=True))
+    cancel_knock_button = tk.Button(controls, text="Cancel Knock", width=18, command=lambda: send_action(context, "set_knock", value=False))
+    knock_button.pack(pady=3)
+    cancel_knock_button.pack(pady=3)
+    continue_button = tk.Button(controls, text="Continue Round", width=18, command=lambda: send_action(context, "continue"))
+    new_match_button = tk.Button(controls, text="New Match", width=18, command=lambda: send_action(context, "continue"))
+    continue_button.pack(pady=3)
+    new_match_button.pack(pady=3)
 
     tk.Label(right, text="Event Log", fg="white", bg="#0b5d2a", font=("Segoe UI", 11, "bold")).pack(anchor="w")
     log_box = tk.Text(right, width=34, height=17, state="disabled", bg="#073b1c", fg="white", wrap="word")
@@ -526,6 +604,10 @@ def launch_client_ui(context: dict[str, Any], host_banner: str | None = None, ti
         "info_var": info_var,
         "log_box": log_box,
         "chat_box": chat_box,
+        "knock_button": knock_button,
+        "cancel_knock_button": cancel_knock_button,
+        "continue_button": continue_button,
+        "new_match_button": new_match_button,
         "your_boxes": [],
         "stock_box": (330, 270, 330 + CARD_WIDTH, 270 + CARD_HEIGHT),
         "discard_box": (430, 270, 430 + CARD_WIDTH, 270 + CARD_HEIGHT),
@@ -566,6 +648,10 @@ def launch_client_ui(context: dict[str, Any], host_banner: str | None = None, ti
                         context["selected_card"] = card
                     else:
                         order = list(context.get("manual_hand_order") or display_hand)
+                        if selected not in order or card not in order:
+                            context["selected_card"] = card if card in order else None
+                            render_state(model, context)
+                            return
                         first_index = order.index(selected)
                         second_index = order.index(card)
                         order[first_index], order[second_index] = order[second_index], order[first_index]
@@ -599,10 +685,12 @@ def launch_client_ui(context: dict[str, Any], host_banner: str | None = None, ti
                     if is_actionable and not context.get("was_actionable", False):
                         play_turn_chime(root)
                     context["was_actionable"] = is_actionable
+                    maybe_play_round_result_sound(root, context, context["state"])
                     sync_manual_hand_order(context, context["state"])
                     context["status_message"] = compute_status_text(context["state"])
                     status_var.set(context["status_message"])
                     timer_var.set(compute_timer_text(context))
+                    update_control_visibility(model, context["state"])
                     render_state(model, context)
                 elif message_type == "error":
                     context["server_error"] = message.get("message", "Unknown server error.")
@@ -613,6 +701,7 @@ def launch_client_ui(context: dict[str, Any], host_banner: str | None = None, ti
                     return
         except queue.Empty:
             pass
+        update_control_visibility(model, context.get("state"))
         timer_var.set(compute_timer_text(context))
         root.after(50, poll_messages)
 
@@ -646,6 +735,7 @@ def render_state(model: dict[str, Any], context: dict[str, Any]) -> None:
 
     canvas.create_text(120, 24, text=f"Round {state['round_index']}", fill="white", font=("Segoe UI", 18, "bold"), anchor="w")
     canvas.create_text(120, 52, text=f"Dealer: {state['players'][state['dealer']]['name']}", fill="white", font=("Segoe UI", 12), anchor="w")
+    canvas.create_text(120, 78, text=match_tally_text(state, you), fill="#d1fae5", font=("Segoe UI", 11, "bold"), anchor="w")
     canvas.create_text(500, 24, text=f"{your_name}: {state['scores'][you]}", fill="white", font=("Segoe UI", 16, "bold"))
     canvas.create_text(700, 24, text=f"{opponent_name}: {state['scores'][opponent]}", fill="white", font=("Segoe UI", 16, "bold"))
 
@@ -672,7 +762,6 @@ def render_state(model: dict[str, Any], context: dict[str, Any]) -> None:
     deadwood_color = "#bbf7d0" if state["your_deadwood"] <= 10 else "#fff3cd"
     display_hand = get_display_hand(state, context)
     hand_visuals = build_hand_visuals(display_hand, state.get("your_last_drawn"))
-    canvas.create_text(120, 476, text="Legend: green=MELD   gold=NEW", fill="#d1fae5", font=("Segoe UI", 10, "bold"), anchor="w")
     canvas.create_text(120, 500, text=f"{your_name}", fill="white", font=("Segoe UI", 14, "bold"), anchor="w")
     canvas.create_text(250, 500, text=f"Deadwood: {state['your_deadwood']}", fill=deadwood_color, font=("Segoe UI", 13, "bold"), anchor="w")
     if can_reorder_hand(state):
@@ -728,7 +817,7 @@ def render_round_summary(canvas: tk.Canvas, state: dict[str, Any]) -> None:
     if summary is None or revealed_hands is None:
         return
 
-    canvas.create_rectangle(70, 150, 810, 540, fill="#102a43", outline="#ffd166", width=3)
+    canvas.create_rectangle(70, 150, 810, 610, fill="#102a43", outline="#ffd166", width=3)
     winner_name = state["players"][summary["round_winner"]]["name"]
     reason_map = {"gin": "went gin", "knock": "won by knock", "undercut": "won by undercut"}
     canvas.create_text(440, 188, text=f"{winner_name} {reason_map.get(summary['reason'], 'won')} for {summary['point_delta']} points", fill="white", font=("Segoe UI", 16, "bold"))
@@ -789,3 +878,16 @@ def render_round_summary(canvas: tk.Canvas, state: dict[str, Any]) -> None:
         font=("Segoe UI", 10, "bold"),
         anchor="w",
     )
+
+    layoff_sequence = summary.get("defender_after_layoff", {}).get("layoff_sequence", [])
+    if layoff_sequence:
+        canvas.create_text(110, 540, text="Layoff Sequence", fill="white", font=("Segoe UI", 12, "bold"), anchor="w")
+        for index, step in enumerate(layoff_sequence[:4]):
+            row_y = 556 + index * 30
+            draw_compact_card(canvas, 110, row_y, step["card"], highlight=True)
+            canvas.create_text(158, row_y + 11, text="->", fill="#ffd166", font=("Segoe UI", 12, "bold"), anchor="w")
+            canvas.create_text(186, row_y + 11, text="onto", fill="#d1fae5", font=("Segoe UI", 9, "bold"), anchor="w")
+            for meld_index, meld_card in enumerate(step.get("target_meld", [])[:5]):
+                draw_compact_card(canvas, 228 + meld_index * 38, row_y, meld_card)
+        if len(layoff_sequence) > 4:
+            canvas.create_text(110, 586, text=f"...and {len(layoff_sequence) - 4} more layoff(s)", fill="#d1fae5", font=("Segoe UI", 9, "italic"), anchor="w")

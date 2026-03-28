@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import queue
 import socket
 import threading
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from engine import (
@@ -33,6 +36,72 @@ RECONNECT_GRACE_SECONDS = 60.0
 AUTH_FAILURE_WINDOW_SECONDS = 60.0
 MAX_AUTH_FAILURES = 5
 DEFAULT_TURN_TIMEOUT_SECONDS = 0
+
+
+def _default_audit_log_path(port: int) -> str:
+    """Return a timestamped local audit log path for one host session."""
+    logs_dir = Path(__file__).resolve().parent / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return str(logs_dir / f"ginrummy_audit_{stamp}_{port}.jsonl")
+
+
+def _append_audit_line(context: dict[str, Any], event: str, **payload: Any) -> None:
+    """Append one JSON audit event to the local host log file."""
+    path = context.get("audit_log_path")
+    if not path:
+        return
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": event,
+        **payload,
+    }
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError:
+        pass
+
+
+def _audit_round_setup(context: dict[str, Any], reason: str) -> None:
+    """Record hidden round setup details for later fairness analysis."""
+    state = context["state"]
+    round_state = state["round"]
+    _append_audit_line(
+        context,
+        "round_setup",
+        reason=reason,
+        round_index=state["round_index"],
+        dealer=state["dealer"],
+        player_names=[player["name"] for player in state["players"]],
+        hands=[list(hand) for hand in round_state["hands"]],
+        discard=list(round_state["discard"]),
+        stock_count=len(round_state["stock"]),
+        stock_order=list(round_state["stock"]),
+    )
+
+
+def _audit_state_snapshot(context: dict[str, Any], label: str) -> None:
+    """Record a compact hidden-state snapshot after a meaningful action."""
+    state = context["state"]
+    round_state = state["round"]
+    _append_audit_line(
+        context,
+        "state_snapshot",
+        label=label,
+        round_index=state["round_index"],
+        scores=list(state["scores"]),
+        match_wins=list(state.get("match_wins", [0, 0])),
+        turn=round_state["turn"],
+        stage=round_state["stage"],
+        pending_knock=bool(round_state["pending_knock"]),
+        stock_count=len(round_state["stock"]),
+        discard_top=round_state["discard"][-1] if round_state["discard"] else None,
+        hands=[list(hand) for hand in round_state["hands"]],
+        last_drawn=list(round_state["last_drawn"]),
+        round_over=bool(round_state["round_over"]),
+        summary=round_state["summary"],
+    )
 
 
 def _hash_password(password: str) -> str:
@@ -65,10 +134,11 @@ def make_server_context(
     Returns:
         Server context dictionary.
     """
-    return {
+    state = make_initial_state(seed=seed)
+    context = {
         "host": host,
         "port": port,
-        "state": make_initial_state(seed=seed),
+        "state": state,
         "server_socket": None,
         "connections": {},
         "player_connections": {},
@@ -83,7 +153,15 @@ def make_server_context(
         "password_hash": _hash_password(password) if password else None,
         "turn_timeout_seconds": max(0, int(turn_timeout_seconds)),
         "turn_deadline_monotonic": None,
+        "audit_log_path": _default_audit_log_path(port),
     }
+    state["log_sink"] = lambda message: _append_audit_line(
+        context,
+        "event_log",
+        round_index=context["state"]["round_index"],
+        message=message,
+    )
+    return context
 
 
 def start_server(context: dict[str, Any]) -> None:
@@ -92,6 +170,15 @@ def start_server(context: dict[str, Any]) -> None:
     context["server_socket"] = server_socket
     context["running"] = True
     _reset_turn_deadline(context)
+    _append_audit_line(
+        context,
+        "session_started",
+        host=context["host"],
+        port=context["port"],
+        local_ip=context.get("local_ip"),
+        turn_timeout_seconds=context.get("turn_timeout_seconds", 0),
+    )
+    _audit_round_setup(context, reason="session_started")
 
     accept_thread = threading.Thread(target=accept_loop, args=(context,), daemon=True)
     accept_thread.start()
@@ -101,6 +188,7 @@ def start_server(context: dict[str, Any]) -> None:
 def stop_server(context: dict[str, Any]) -> None:
     """Stop the server and close sockets."""
     context["running"] = False
+    _append_audit_line(context, "session_stopped")
     try:
         if context["server_socket"] is not None:
             context["server_socket"].close()
@@ -269,11 +357,13 @@ def _apply_turn_timeout(context: dict[str, Any]) -> None:
         append_log(state, f"{player_name} ran out of time and automatically discarded {discard}.")
         discard_card(state, player_index, discard)
 
+    _audit_state_snapshot(context, label=f"timeout_{stage}")
     _reset_turn_deadline(context)
 
 
 def _send_fatal_and_close(context: dict[str, Any], connection_id: int, message: str) -> None:
     """Send a fatal error to a connection and close it."""
+    _append_audit_line(context, "fatal", connection_id=connection_id, message=message)
     try:
         _send_to_connection(context, connection_id, {"type": "fatal", "message": message})
     except OSError:
@@ -316,6 +406,13 @@ def _close_connection(
 
     if announce_disconnect and player_index is not None:
         context["state"]["log"].append(f"{context['state']['players'][player_index]['name']} disconnected.")
+        _append_audit_line(
+            context,
+            "disconnect",
+            connection_id=connection_id,
+            player_index=player_index,
+            reserve_slot=reserve_slot,
+        )
 
 
 def _cleanup_expired_state(context: dict[str, Any]) -> None:
@@ -453,6 +550,14 @@ def handle_client_message(context: dict[str, Any], connection_id: int, message: 
         connection["player_index"] = player_index
         context["player_connections"][player_index] = connection_id
         rename_player(context["state"], player_index, requested_name)
+        _append_audit_line(
+            context,
+            "player_joined",
+            connection_id=connection_id,
+            player_index=player_index,
+            requested_name=requested_name,
+            peer_ip=peer_ip,
+        )
         _send_to_connection(context, connection_id, {"type": "assign", "player": player_index})
         _send_to_connection(context, connection_id, {"type": "state", "state": _make_player_payload(context, player_index)})
         broadcast_state(context)
@@ -468,6 +573,20 @@ def handle_client_message(context: dict[str, Any], connection_id: int, message: 
         return
 
     action = message.get("action")
+    player_name = context["state"]["players"][player_index]["name"]
+    _append_audit_line(
+        context,
+        "action_received",
+        connection_id=connection_id,
+        player_index=player_index,
+        player_name=player_name,
+        action=action,
+        payload={key: value for key, value in message.items() if key not in {"type", "action"}},
+        round_index=context["state"]["round_index"],
+        stage=context["state"]["round"]["stage"],
+    )
+    previous_round_index = context["state"]["round_index"]
+    previous_round_over = bool(context["state"]["round"]["round_over"])
     try:
         if action == "draw_stock":
             draw_from_stock(context["state"], player_index)
@@ -493,8 +612,28 @@ def handle_client_message(context: dict[str, Any], connection_id: int, message: 
             raise ValueError("Unknown action.")
     except ValueError as exc:
         send_error(context, connection_id, str(exc))
+        _append_audit_line(
+            context,
+            "action_rejected",
+            connection_id=connection_id,
+            player_index=player_index,
+            action=action,
+            error=str(exc),
+        )
         broadcast_state(context)
         return
+
+    _audit_state_snapshot(context, label=f"after_{action}")
+    if context["state"]["round_index"] != previous_round_index:
+        _audit_round_setup(context, reason=f"after_{action}")
+    elif not previous_round_over and context["state"]["round"]["round_over"]:
+        _append_audit_line(
+            context,
+            "round_completed",
+            round_index=context["state"]["round_index"],
+            summary=context["state"]["round"]["summary"],
+            revealed_hands=context["state"]["round"]["revealed_hands"],
+        )
 
     if action in {"draw_stock", "draw_discard", "discard", "continue"}:
         _reset_turn_deadline(context)

@@ -155,6 +155,7 @@ def make_initial_state(seed: int | None = None) -> dict[str, Any]:
     rng = random.Random(seed)
     state: dict[str, Any] = {
         "scores": [0, 0],
+        "match_wins": [0, 0],
         "dealer": 0,
         "round_index": 0,
         "target_score": 100,
@@ -181,6 +182,12 @@ def append_log(state: dict[str, Any], message: str) -> None:
     """
     state["log"].append(message)
     state["log"] = state["log"][-18:]
+    sink = state.get("log_sink")
+    if callable(sink):
+        try:
+            sink(message)
+        except Exception:
+            pass
 
 
 def start_new_round(state: dict[str, Any], dealer: int | None = None) -> None:
@@ -243,12 +250,9 @@ def _sort_hand_for_player(state: dict[str, Any], player_index: int, keep_drawn_o
     hand = list(round_state["hands"][player_index])
 
     if keep_drawn_on_right and last_drawn in hand:
-        evaluation = evaluate_hand(hand)
-        melded_cards = {card for meld in evaluation["melds"] for card in meld}
-        if last_drawn not in melded_cards:
-            hand.remove(last_drawn)
-            round_state["hands"][player_index] = sort_cards(hand, mode) + [last_drawn]
-            return
+        hand.remove(last_drawn)
+        round_state["hands"][player_index] = sort_cards(hand, mode) + [last_drawn]
+        return
 
     round_state["hands"][player_index] = sort_cards(hand, mode)
 
@@ -401,17 +405,25 @@ def apply_layoffs(knocker_eval: dict[str, Any], defender_eval: dict[str, Any]) -
     """
     melds = [list(meld) for meld in knocker_eval["melds"]]
     deadwood = list(defender_eval["deadwood"])
+    layoff_sequence: list[dict[str, Any]] = []
     changed = True
     while changed:
         changed = False
         for card in list(deadwood):
-            for meld in melds:
+            for meld_index, meld in enumerate(melds):
                 if can_layoff_card(card, meld):
                     meld.append(card)
                     if len({card_rank(x) for x in meld}) == 1:
                         meld[:] = sort_cards(meld, "suit")
                     else:
                         meld[:] = sorted(meld, key=lambda c: RANK_ORDER[card_rank(c)])
+                    layoff_sequence.append(
+                        {
+                            "card": card,
+                            "meld_index": meld_index,
+                            "target_meld": list(meld),
+                        }
+                    )
                     deadwood.remove(card)
                     changed = True
                     break
@@ -419,8 +431,10 @@ def apply_layoffs(knocker_eval: dict[str, Any], defender_eval: dict[str, Any]) -
                 break
     return {
         "melds": defender_eval["melds"],
+        "melds_after_layoff": [list(meld) for meld in melds],
         "deadwood": _basic_sort_cards(deadwood, "rank"),
         "deadwood_value": sum(card_value(card) for card in deadwood),
+        "layoff_sequence": layoff_sequence,
     }
 
 
@@ -521,6 +535,7 @@ def finish_round(state: dict[str, Any], knocker: int) -> None:
             state["winner"] = 1
         else:
             state["winner"] = summary["round_winner"]
+        state["match_wins"][state["winner"]] += 1
         append_log(state, f"Match over. {state['players'][state['winner']]['name']} wins.")
 
 
@@ -591,12 +606,15 @@ def draw_from_stock(state: dict[str, Any], player_index: int) -> None:
     if not round_state["stock"]:
         raise ValueError("The stock pile is empty.")
 
+    forced_opening_stock_draw = must_draw_from_stock(round_state)
     card = round_state["stock"].pop()
     round_state["hands"][player_index].append(card)
     round_state["last_drawn"][player_index] = card
     _sort_hand_for_player(state, player_index, keep_drawn_on_right=True)
     round_state["stage"] = "discard"
     round_state["pending_knock"] = False
+    if forced_opening_stock_draw:
+        round_state["first_upcard_declines"] = []
     append_log(state, f"{state['players'][player_index]['name']} drew from stock.")
 
 
@@ -683,6 +701,7 @@ def discard_card(state: dict[str, Any], player_index: int, card: str) -> None:
         return
 
     round_state["last_drawn"][player_index] = None
+    _sort_hand_for_player(state, player_index, keep_drawn_on_right=False)
     round_state["turn"] = 1 - player_index
     round_state["stage"] = "draw"
     round_state["pending_knock"] = False
@@ -733,6 +752,7 @@ def make_public_state(state: dict[str, Any], viewer: int) -> dict[str, Any]:
             {"name": state["players"][1]["name"]},
         ],
         "scores": list(state["scores"]),
+        "match_wins": list(state["match_wins"]),
         "dealer": state["dealer"],
         "round_index": state["round_index"],
         "target_score": state["target_score"],
